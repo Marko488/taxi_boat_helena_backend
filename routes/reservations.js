@@ -96,4 +96,48 @@ router.get("/", async (req, res) => {
   }
 });
 
+router.delete("/:id", async (req, res) => {
+  try {
+    const ID_rez = req.params.id;
+
+    const [reservations] = await pool.query(
+      `SELECT * FROM line_reservations WHERE id=?`,
+      [ID_rez],
+    );
+
+    if (reservations.length == 0) {
+      return res
+        .status(404)
+        .json({ message: "Rezervaciju nije moguće pronaći!" });
+    }
+
+    const reservation = reservations[0];
+
+    if (reservation.status != "active") {
+      return res
+        .status(400)
+        .json({ message: "Nije moguce obrisati ovu rezervaciju!" });
+    }
+
+    await pool.query(
+      `UPDATE line_reservations SET status="cancelled" WHERE id=?`,
+      [ID_rez],
+    );
+
+    await pool.query(
+      `UPDATE line_departures SET reserved_seats=reserved_seats-? WHERE id=?`,
+      [reservation.seats_count, reservation.line_departure_id],
+    );
+
+    return res
+      .status(200)
+      .json({ message: "Uspjesno ste otkazali rezervaciju!" });
+  } catch (error) {
+    console.error("GRESKA:", error.message);
+    return res
+      .status(500)
+      .json({ message: "Greska u radu sa bazom podataka!" });
+  }
+});
+
 export default router;

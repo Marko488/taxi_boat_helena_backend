@@ -4,54 +4,99 @@ const router = express.Router();
 
 router.post("/", async (req, res) => {
   try {
-    const { line_departure_id, user_id, seats_count } = req.body;
+    const { line_departure_id, user_id, adults_count, children_count } =
+      req.body;
+
+    const adults = Number(adults_count);
+    const children = Number(children_count);
+    const seats_count = adults + children;
+
+    if (!line_departure_id || !user_id) {
+      return res.status(400).json({
+        message: "Nedostaju obavezni podaci za rezervaciju!",
+      });
+    }
+
+    if (Number.isNaN(adults) || adults < 1) {
+      return res.status(400).json({
+        message: "Potrebno je odabrati barem 1 odraslu osobu.",
+      });
+    }
+
+    if (Number.isNaN(children) || children < 0) {
+      return res.status(400).json({
+        message: "Broj djece nije ispravan.",
+      });
+    }
+
+    if (seats_count < 1) {
+      return res.status(400).json({
+        message: "Ukupan broj mjesta mora biti barem 1.",
+      });
+    }
 
     const [departures] = await pool.query(
-      `SELECT * FROM line_departures WHERE id=?`,
+      `SELECT * FROM line_departures WHERE id = ?`,
       [line_departure_id],
     );
-    if (departures.length == 0) {
-      return res
-        .status(404)
-        .json({ message: `Ne postoji polazak sa ID-em ${line_departure_id}!` });
-    }
-    let departure = departures[0];
 
-    let availableSeats = departure.capacity - departure.reserved_seats;
+    if (departures.length === 0) {
+      return res.status(404).json({
+        message: `Ne postoji polazak sa ID-em ${line_departure_id}!`,
+      });
+    }
+
+    const departure = departures[0];
+    const availableSeats = departure.capacity - departure.reserved_seats;
+
     if (availableSeats < seats_count) {
       return res.status(400).json({
-        message: `Rezervirali biste ${seats_count}, a najviše se trenutno može ${availableSeats} za taj polazak!`,
+        message: `Rezervirali biste ${seats_count} mjesta, a trenutno je dostupno najviše ${availableSeats}.`,
       });
     }
 
     if (departure.status !== "scheduled") {
-      return res
-        .status(400)
-        .json({ message: "Nije moguce rezervitati taj polazak!" });
+      return res.status(400).json({
+        message: "Nije moguće rezervirati taj polazak!",
+      });
     }
 
     const reservationCode = "RES_" + Date.now();
 
     await pool.query(
       `INSERT INTO line_reservations 
-   (line_departure_id, user_id, seats_count, status, reservation_code)
-   VALUES (?, ?, ?, 'active', ?)`,
-      [line_departure_id, user_id, seats_count, reservationCode],
+      (line_departure_id, user_id, adults_count, children_count, seats_count, status, reservation_code)
+      VALUES (?, ?, ?, ?, ?, 'active', ?)`,
+      [
+        line_departure_id,
+        user_id,
+        adults,
+        children,
+        seats_count,
+        reservationCode,
+      ],
     );
 
     await pool.query(
-      `UPDATE line_departures SET reserved_seats=reserved_seats+? WHERE id=?`,
+      `UPDATE line_departures 
+       SET reserved_seats = reserved_seats + ? 
+       WHERE id = ?`,
       [seats_count, line_departure_id],
     );
+
     return res.status(201).json({
-      message: `Uspjesno ste rezervirali ${seats_count} mjesta za polazak ${line_departure_id}!`,
+      message: `Uspješno ste rezervirali ${seats_count} mjesta.`,
       reservationCode,
+      totalSeats: seats_count,
+      adultsCount: adults,
+      childrenCount: children,
+      totalPrice: adults * 4 + children * 2,
     });
   } catch (error) {
     console.error(error.message);
-    return res
-      .status(500)
-      .json({ message: "Greska u radu sa bazom podataka!" });
+    return res.status(500).json({
+      message: "Greška u radu sa bazom podataka!",
+    });
   }
 });
 

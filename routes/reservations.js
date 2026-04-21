@@ -2,18 +2,38 @@ import express from "express";
 import { pool } from "../db.js";
 const router = express.Router();
 
+import { Resend } from "resend";
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+import buildReservationEmail from "../email.js";
+
 router.post("/", async (req, res) => {
   try {
-    const { line_departure_id, user_id, adults_count, children_count } =
-      req.body;
+    const {
+      line_departure_id,
+      user_id,
+      adults_count,
+      children_count,
+      email,
+      from_location,
+      to_location,
+    } = req.body;
 
     const adults = Number(adults_count);
     const children = Number(children_count);
     const seats_count = adults + children;
 
-    if (!line_departure_id || !user_id) {
+    if (!line_departure_id || !user_id || !email) {
       return res.status(400).json({
         message: "Nedostaju obavezni podaci za rezervaciju!",
+      });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        message: "Email adresa nije ispravna.",
       });
     }
 
@@ -61,7 +81,8 @@ router.post("/", async (req, res) => {
       });
     }
 
-    const reservationCode = "RES_" + Date.now();
+    const reservationCode =
+      "RES-" + Math.random().toString(36).slice(2, 8).toUpperCase();
 
     await pool.query(
       `INSERT INTO line_reservations 
@@ -84,13 +105,42 @@ router.post("/", async (req, res) => {
       [seats_count, line_departure_id],
     );
 
+    const totalPrice = adults * 4 + children * 2;
+
+    const emailHtml = buildReservationEmail({
+      reservationCode,
+      departure,
+      routeText: `${from_location} → ${to_location}`,
+      seatsCount: seats_count,
+      adults,
+      children,
+      totalPrice,
+    });
+
+    try {
+      const { data, error } = await resend.emails.send({
+        from: "Taxi Line <onboarding@resend.dev>",
+        to: email,
+        subject: "Potvrda rezervacije",
+        html: emailHtml,
+      });
+
+      if (error) {
+        console.error("Greška kod slanja emaila:", error);
+      } else {
+        console.log("Email uspješno poslan:", data);
+      }
+    } catch (mailError) {
+      console.error("Email servis error:", mailError);
+    }
+
     return res.status(201).json({
       message: `Uspješno ste rezervirali ${seats_count} mjesta.`,
       reservationCode,
       totalSeats: seats_count,
       adultsCount: adults,
       childrenCount: children,
-      totalPrice: adults * 4 + children * 2,
+      totalPrice,
     });
   } catch (error) {
     console.error(error.message);

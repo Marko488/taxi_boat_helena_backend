@@ -1,6 +1,7 @@
 import dotenv from "dotenv";
 dotenv.config();
 import cors from "cors";
+
 import express from "express";
 import { pool } from "./db.js";
 import departuresRouter from "./routes/departures.js";

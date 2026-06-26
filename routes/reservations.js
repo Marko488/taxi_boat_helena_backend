@@ -67,6 +67,13 @@ router.post("/", async (req, res) => {
     }
 
     const departure = departures[0];
+
+if (new Date(`${departure.departure_date}T${departure.departure_time}`) < new Date()) {
+  return res.status(400).json({
+    message: "Nije moguće rezervirati polazak u prošlosti.",
+  });
+}
+
     const availableSeats = departure.capacity - departure.reserved_seats;
 
     if (availableSeats < seats_count) {
@@ -99,11 +106,20 @@ router.post("/", async (req, res) => {
     );
 
     await pool.query(
-      `UPDATE line_departures 
-       SET reserved_seats = reserved_seats + ? 
+      `UPDATE line_departures
+       SET reserved_seats = reserved_seats + ?
        WHERE id = ?`,
       [seats_count, line_departure_id],
     );
+
+    // Ako je polazak sada popunjen, automatski ga označi kao 'full'.
+    const noviReserved = departure.reserved_seats + seats_count;
+    if (noviReserved >= departure.capacity) {
+      await pool.query(
+        "UPDATE line_departures SET status = 'full' WHERE id = ? AND status = 'scheduled'",
+        [line_departure_id],
+      );
+    }
 
     const totalPrice = adults * 4 + children * 2;
 
@@ -222,6 +238,12 @@ router.delete("/:id", async (req, res) => {
     await pool.query(
       `UPDATE line_departures SET reserved_seats=reserved_seats-? WHERE id=?`,
       [reservation.seats_count, reservation.line_departure_id],
+    );
+
+    // Oslobodilo se mjesto — ako je bio popunjen, vrati ga na aktivan.
+    await pool.query(
+      "UPDATE line_departures SET status = 'scheduled' WHERE id = ? AND status = 'full'",
+      [reservation.line_departure_id],
     );
 
     return res

@@ -256,4 +256,59 @@ router.delete("/:id", requireAdmin, async (req, res) => {
   }
 });
 
+// OTKAZIVANJE OD STRANE GOSTA (preko koda rezervacije) — javno
+router.post("/cancel-by-code", async (req, res) => {
+  try {
+    const { reservation_code } = req.body;
+
+    if (!reservation_code) {
+      return res.status(400).json({ message: "Unesite kod rezervacije." });
+    }
+
+    const [reservations] = await pool.query(
+      "SELECT * FROM line_reservations WHERE reservation_code = ?",
+      [reservation_code.trim()],
+    );
+
+    if (reservations.length === 0) {
+      return res
+        .status(404)
+        .json({ message: "Rezervacija s tim kodom nije pronađena." });
+    }
+
+    const reservation = reservations[0];
+
+    if (reservation.status !== "active") {
+      return res
+        .status(400)
+        .json({ message: "Ova rezervacija je već otkazana." });
+    }
+
+    await pool.query(
+      "UPDATE line_reservations SET status = 'cancelled' WHERE id = ?",
+      [reservation.id],
+    );
+
+    await pool.query(
+      "UPDATE line_departures SET reserved_seats = reserved_seats - ? WHERE id = ?",
+      [reservation.seats_count, reservation.line_departure_id],
+    );
+
+    // Oslobodilo se mjesto — ako je polazak bio popunjen, vrati ga na aktivan.
+    await pool.query(
+      "UPDATE line_departures SET status = 'scheduled' WHERE id = ? AND status = 'full'",
+      [reservation.line_departure_id],
+    );
+
+    return res
+      .status(200)
+      .json({ message: "Rezervacija je uspješno otkazana." });
+  } catch (error) {
+    console.error("GRESKA:", error.message);
+    return res
+      .status(500)
+      .json({ message: "Greška kod otkazivanja rezervacije." });
+  }
+});
+
 export default router;

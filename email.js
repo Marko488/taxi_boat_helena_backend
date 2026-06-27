@@ -12,6 +12,9 @@ const buildReservationEmail = ({
       ? `${departure.from_location} → ${departure.to_location}`
       : "Ruta nije dostupna";
 
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+  const cancelUrl = `${frontendUrl}/otkazi?kod=${reservationCode}`;
+
   return `
     <div style="font-family: Arial, sans-serif; color: #0f172a; line-height: 1.6; max-width: 640px; margin: 0 auto; padding: 24px;">
 
@@ -43,6 +46,16 @@ const buildReservationEmail = ({
       <div style="background: #ecfeff; border: 1px solid #a5f3fc; border-radius: 16px; padding: 16px; margin-top: 20px;">
         <p style="margin: 0; font-size: 14px;">
           💡 <strong>Napomena:</strong> Plaćanje se vrši gotovinom prilikom dolaska na polazak.
+        </p>
+      </div>
+
+      <!-- OTKAZIVANJE -->
+      <div style="text-align: center; margin-top: 24px;">
+        <a href="${cancelUrl}" style="display: inline-block; background: #ef4444; color: white; text-decoration: none; padding: 12px 22px; border-radius: 12px; font-weight: bold;">
+          Otkaži rezervaciju
+        </a>
+        <p style="font-size: 12px; color: #94a3b8; margin-top: 10px;">
+          Ne možete otvoriti gumb? Idite na ${frontendUrl}/otkazi i upišite kod ${reservationCode}.
         </p>
       </div>
 

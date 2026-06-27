@@ -1,5 +1,6 @@
 import express from "express";
 import { pool } from "../db.js";
+import { requireAdmin } from "../middleware/auth.js";
 const router = express.Router();
 
 import { Resend } from "resend";
@@ -14,6 +15,7 @@ router.post("/", async (req, res) => {
       user_id,
       adults_count,
       children_count,
+      name,
       email,
       from_location,
       to_location,
@@ -26,6 +28,12 @@ router.post("/", async (req, res) => {
     if (!line_departure_id || !user_id || !email) {
       return res.status(400).json({
         message: "Nedostaju obavezni podaci za rezervaciju!",
+      });
+    }
+
+    if (!name || name.trim().length < 2) {
+      return res.status(400).json({
+        message: "Unesite ime i prezime.",
       });
     }
 
@@ -92,9 +100,9 @@ if (new Date(`${departure.departure_date}T${departure.departure_time}`) < new Da
       "RES-" + Math.random().toString(36).slice(2, 8).toUpperCase();
 
     await pool.query(
-      `INSERT INTO line_reservations 
-      (line_departure_id, user_id, adults_count, children_count, seats_count, status, reservation_code)
-      VALUES (?, ?, ?, ?, ?, 'active', ?)`,
+      `INSERT INTO line_reservations
+      (line_departure_id, user_id, adults_count, children_count, seats_count, status, reservation_code, guest_name, guest_email)
+      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
       [
         line_departure_id,
         user_id,
@@ -102,6 +110,8 @@ if (new Date(`${departure.departure_date}T${departure.departure_time}`) < new Da
         children,
         seats_count,
         reservationCode,
+        name.trim(),
+        email.trim(),
       ],
     );
 
@@ -166,48 +176,37 @@ if (new Date(`${departure.departure_date}T${departure.departure_time}`) < new Da
   }
 });
 
-router.get("/", async (req, res) => {
+router.get("/", requireAdmin, async (req, res) => {
   try {
     const [rezervacije] = await pool.query(`SELECT
         lr.id,
         lr.reservation_code,
+        lr.guest_name,
+        lr.guest_email,
+        lr.adults_count,
+        lr.children_count,
         lr.seats_count,
         lr.status,
-
-        u.full_name AS user_name,
-
-        ld.departure_date,
+        DATE_FORMAT(ld.departure_date, '%Y-%m-%d') AS departure_date,
         ld.departure_time,
-
         fl.name AS from_location,
         tl.name AS to_location,
-
         b.name AS boat_name
-
       FROM line_reservations lr
-
-      JOIN users u ON lr.user_id = u.id
       JOIN line_departures ld ON lr.line_departure_id = ld.id
       JOIN locations fl ON ld.from_location_id = fl.id
       JOIN locations tl ON ld.to_location_id = tl.id
       JOIN boats b ON ld.boat_id = b.id
+      ORDER BY ld.departure_date DESC, ld.departure_time ASC`);
 
-      ORDER BY ld.departure_time ASC`);
-    if (rezervacije.length > 0) {
-      return res.status(200).json(rezervacije);
-    } else {
-      return res.status(404).json({
-        message: "Nema rezervacija",
-        data: [],
-      });
-    }
+    return res.status(200).json(rezervacije);
   } catch (error) {
     console.log("GRESKA: ", error.message);
     res.status(500).json({ message: "Greska u radu sa bazom podataka!" });
   }
 });
 
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", requireAdmin, async (req, res) => {
   try {
     const ID_rez = req.params.id;
 

@@ -3,7 +3,6 @@ dotenv.config();
 import cors from "cors";
 
 import express from "express";
-import { pool } from "./db.js";
 import departuresRouter from "./routes/departures.js";
 import reservationsRouter from "./routes/reservations.js";
 import authRouter from "./routes/auth.js";
@@ -17,16 +16,6 @@ app.use("/line-departures", departuresRouter);
 app.use("/line-reservations", reservationsRouter);
 app.use("/locations", locationsRouter);
 app.use("/boats", boatsRouter);
-
-app.get("/test-db", async (req, res) => {
-  try {
-    let [rows] = await pool.query("SELECT 1");
-    res.status(200).json({ message: "Baza radi", rows });
-  } catch (error) {
-    console.error("Greska u spajanju na bazi!", error.message);
-    res.status(500).json({ message: "Greska u spajanju na bazi!" });
-  }
-});
 
 const PORT = process.env.PORT || 3000;
 

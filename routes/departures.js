@@ -7,8 +7,6 @@ router.get("/", async (req, res) => {
   try {
     const { date, from } = req.query;
 
-    console.log(req.query.date);
-
     let sql = `
       SELECT 
         ld.id,

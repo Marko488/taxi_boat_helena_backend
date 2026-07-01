@@ -1,15 +1,30 @@
--- Taxi Boat Helena — baza podataka (schema + početni podaci)
+-- =========================================================
+-- Taxi Boat Helena — baza podataka za RAILWAY
+-- Prilagođeno: radi izravno u postojećoj bazi "railway"
+-- (bez DROP/CREATE/USE DATABASE — Railway već ima bazu "railway").
+-- Uvezi ovu datoteku preko MySQL Workbencha spojenog na Railway.
+-- =========================================================
 
-DROP DATABASE IF EXISTS taxi_boat_helena_booking;
+USE railway;
 
-CREATE DATABASE taxi_boat_helena_booking
-CHARACTER SET utf8mb4
-COLLATE utf8mb4_unicode_ci;
+-- =========================================================
+-- RESET: obriši postojeće tablice (da se skripta može pokretati više puta)
+-- =========================================================
+SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS tour_reservations;
+DROP TABLE IF EXISTS tour_departures;
+DROP TABLE IF EXISTS tours;
+DROP TABLE IF EXISTS line_reservations;
+DROP TABLE IF EXISTS line_departures;
+DROP TABLE IF EXISTS boats;
+DROP TABLE IF EXISTS locations;
+DROP TABLE IF EXISTS admins;
+DROP TABLE IF EXISTS users;
+SET FOREIGN_KEY_CHECKS = 1;
 
-USE taxi_boat_helena_booking;
-
+-- =========================================================
 -- 1. USERS
-
+-- =========================================================
 CREATE TABLE users (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     full_name VARCHAR(100) NOT NULL,
@@ -20,10 +35,9 @@ CREATE TABLE users (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+-- =========================================================
 -- 2. ADMINS
--- Administratori se NE seedaju ovdje (lozinke moraju biti kriptirane).
--- Admina kreirati skriptom:  node createAdmin.js "Ime Prezime" email lozinka admin
-
+-- =========================================================
 CREATE TABLE admins (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     full_name VARCHAR(100) NOT NULL,
@@ -34,8 +48,9 @@ CREATE TABLE admins (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+-- =========================================================
 -- 3. LOCATIONS
-
+-- =========================================================
 CREATE TABLE locations (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE,
@@ -43,8 +58,9 @@ CREATE TABLE locations (
     description TEXT NULL
 );
 
+-- =========================================================
 -- 4. BOATS
-
+-- =========================================================
 CREATE TABLE boats (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE,
@@ -57,8 +73,9 @@ CREATE TABLE boats (
     CONSTRAINT chk_boats_capacity CHECK (capacity > 0)
 );
 
+-- =========================================================
 -- 5. LINE DEPARTURES (večernja linija)
-
+-- =========================================================
 CREATE TABLE line_departures (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     boat_id BIGINT UNSIGNED NOT NULL,
@@ -92,8 +109,9 @@ ALTER TABLE line_departures
 ADD CONSTRAINT uq_line_departure_boat_datetime
 UNIQUE (boat_id, departure_date, departure_time);
 
+-- =========================================================
 -- 6. LINE RESERVATIONS (rezervacije za liniju)
-
+-- =========================================================
 CREATE TABLE line_reservations (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     line_departure_id BIGINT UNSIGNED NOT NULL,
@@ -119,8 +137,9 @@ CREATE TABLE line_reservations (
     CONSTRAINT chk_line_reservations_seats CHECK (seats_count > 0)
 );
 
--- 7. TOURS (izleti — model pripremljen za buduće proširenje)
-
+-- =========================================================
+-- 7. TOURS
+-- =========================================================
 CREATE TABLE tours (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(150) NOT NULL UNIQUE,
@@ -135,9 +154,9 @@ CREATE TABLE tours (
         ON DELETE RESTRICT ON UPDATE CASCADE
 );
 
-
+-- =========================================================
 -- 8. TOUR DEPARTURES
-
+-- =========================================================
 CREATE TABLE tour_departures (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     tour_id BIGINT UNSIGNED NOT NULL,
@@ -169,9 +188,9 @@ CREATE TABLE tour_departures (
     CONSTRAINT chk_tour_departures_time_range CHECK (start_time < end_time)
 );
 
-
+-- =========================================================
 -- 9. TOUR RESERVATIONS
-
+-- =========================================================
 CREATE TABLE tour_reservations (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     tour_departure_id BIGINT UNSIGNED NOT NULL,
@@ -193,9 +212,9 @@ CREATE TABLE tour_reservations (
     CONSTRAINT chk_tour_reservations_seats CHECK (seats_count > 0)
 );
 
-
+-- =========================================================
 -- SEED: LOCATIONS
-
+-- =========================================================
 INSERT INTO locations (name, type, description) VALUES
 ('Cres', 'city', 'Grad Cres - glavna polazna lokacija'),
 ('Kamp Kovačine', 'camp', 'Kamp Kovačine - druga lokacija taxi boat linije'),
@@ -203,26 +222,25 @@ INSERT INTO locations (name, type, description) VALUES
 ('Lubenice', 'tour_destination', 'Turistička destinacija Lubenice'),
 ('Plava grota', 'tour_destination', 'Turistička destinacija Plava grota');
 
-
+-- =========================================================
 -- SEED: BOATS
-
+-- =========================================================
 INSERT INTO boats (name, boat_type, capacity, is_active, notes) VALUES
 ('Taxi Boat Helena 1', 'taxi_boat', 20, TRUE, 'Prva taxi barka za večernju liniju'),
 ('Taxi Boat Helena 2', 'taxi_boat', 20, TRUE, 'Druga taxi barka za večernju liniju'),
 ('Gliser Helena', 'speedboat', 8, TRUE, 'Gliser za dnevne turističke izlete');
 
-
+-- =========================================================
 -- SEED: USERS
-
+-- =========================================================
 INSERT INTO users (full_name, email, phone, password_hash) VALUES
 ('Marko Horvat', 'marko@example.com', '+385911111111', NULL),
 ('Ana Marić', 'ana@example.com', '+385922222222', NULL),
 ('Ivana Novak', 'ivana@example.com', '+385933333333', NULL);
 
-
+-- =========================================================
 -- SEED: TOURS
-
-
+-- =========================================================
 INSERT INTO tours (name, description, default_from_location_id, is_active)
 VALUES
 (
@@ -238,10 +256,9 @@ VALUES
     TRUE
 );
 
-
+-- =========================================================
 -- SEED: TOUR DEPARTURES
-
-
+-- =========================================================
 INSERT INTO tour_departures (
     tour_id, boat_id, departure_date, start_time, end_time,
     from_location_id, capacity, reserved_seats, status
@@ -266,11 +283,9 @@ VALUES
     (SELECT id FROM locations WHERE name = 'Cres'), 8, 0, 'scheduled'
 );
 
-
--- SEED: LINE DEPARTURES
--- Generira polaske od danas do idućih 5 dana,
--- svakih 10 minuta od 18:00 do 00:00 (smjer se izmjenjuje).
-
+-- =========================================================
+-- SEED: LINE DEPARTURES (danas + idućih 5 dana, 18:00–00:00 svakih 10 min)
+-- =========================================================
 INSERT INTO line_departures (
     boat_id, departure_date, departure_time,
     from_location_id, to_location_id, capacity, reserved_seats, status
@@ -312,9 +327,9 @@ FROM dates d
 CROSS JOIN slots s
 ORDER BY d.departure_date, s.departure_time;
 
-
+-- =========================================================
 -- SEED: TESTNE LINE RESERVATIONS
-
+-- =========================================================
 INSERT INTO line_reservations (
     line_departure_id, user_id, adults_count, children_count,
     seats_count, status, reservation_code, guest_name, guest_email
@@ -336,9 +351,9 @@ VALUES
     3, 2, 1, 3, 'active', 'LB-TEST-0003', 'Ivana Novak', 'ivana@example.com'
 );
 
-
+-- =========================================================
 -- SEED: TESTNE TOUR RESERVATIONS
-
+-- =========================================================
 INSERT INTO tour_reservations (
     tour_departure_id, user_id, seats_count, status, reservation_code
 )
@@ -346,10 +361,9 @@ VALUES
 (1, 1, 2, 'active', 'TR-TEST-0001'),
 (3, 3, 1, 'active', 'TR-TEST-0002');
 
-
+-- =========================================================
 -- Uskladi reserved_seats s upisanim aktivnim rezervacijama
-
-
+-- =========================================================
 UPDATE line_departures
 SET reserved_seats = (
     SELECT COALESCE(SUM(lr.seats_count), 0)

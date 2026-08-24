@@ -1,3 +1,18 @@
+// "2026-08-22" -> "22. 08. 2026." ; podnosi i Date objekt
+const formatirajDatum = (vrijednost) => {
+  if (!vrijednost) return "-";
+  const tekst =
+    vrijednost instanceof Date
+      ? vrijednost.toISOString().slice(0, 10)
+      : String(vrijednost).slice(0, 10);
+  const [g, m, d] = tekst.split("-");
+  return g && m && d ? `${d}. ${m}. ${g}.` : tekst;
+};
+
+// "18:30:00" -> "18:30"
+const formatirajVrijeme = (vrijednost) =>
+  vrijednost ? String(vrijednost).slice(0, 5) : "-";
+
 const buildReservationEmail = ({
   reservationCode,
   departure,
@@ -7,11 +22,6 @@ const buildReservationEmail = ({
   children,
   totalPrice,
 }) => {
-  const ruta =
-    departure?.from_location && departure?.to_location
-      ? `${departure.from_location} → ${departure.to_location}`
-      : "Ruta nije dostupna";
-
   const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
   const cancelUrl = `${frontendUrl}/otkazi?kod=${reservationCode}`;
 
@@ -30,7 +40,8 @@ const buildReservationEmail = ({
 
         <div style="margin-top: 12px;">
           <p><strong>Kod rezervacije:</strong> ${reservationCode}</p>
-<p><strong>Datum:</strong> ${String(departure.departure_date).split("00")[0]}</p>          <p><strong>Vrijeme:</strong> ${departure?.departure_time || "-"}</p>
+          <p><strong>Datum:</strong> ${formatirajDatum(departure?.departure_date)}</p>
+          <p><strong>Vrijeme:</strong> ${formatirajVrijeme(departure?.departure_time)}</p>
           <p><strong>Ruta:</strong> ${routeText}</p>
         </div>
 

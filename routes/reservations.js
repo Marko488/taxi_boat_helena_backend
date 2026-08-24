@@ -1,166 +1,244 @@
 import express from "express";
+import crypto from "node:crypto";
 import { pool } from "../db.js";
 import { requireAdmin } from "../middleware/auth.js";
 const router = express.Router();
 
 import { Resend } from "resend";
-const resend = new Resend(process.env.RESEND_API_KEY);
-
 import buildReservationEmail from "../email.js";
 
-router.post("/", async (req, res) => {
+// Resend se inicijalizira samo ako je ključ postavljen. Bez njega aplikacija
+// normalno radi — rezervacija se uredno zapiše, samo se potvrda ne šalje.
+const resend = process.env.RESEND_API_KEY
+  ? new Resend(process.env.RESEND_API_KEY)
+  : null;
+
+// Cjenik (u eurima). Držati na jednom mjestu.
+const CIJENA_ODRASLI = 4;
+const CIJENA_DIJETE = 2;
+
+// Kod rezervacije: 6 znakova iz abecede bez vizualno sličnih znakova (bez I, O, 0, 1).
+// Koristi se kriptografski izvor slučajnosti umjesto Math.random().
+const ABECEDA = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const generirajKod = () => {
+  const bajtovi = crypto.randomBytes(6);
+  let kod = "";
+  for (const bajt of bajtovi) kod += ABECEDA[bajt % ABECEDA.length];
+  return `RES-${kod}`;
+};
+
+// Pronađi korisnika po e-mailu ili ga stvori. Vraća id.
+// LAST_INSERT_ID(id) osigurava da insertId sadrži id postojećeg retka kad e-mail već postoji.
+const nadjiIliStvoriKorisnika = async (veza, ime, email) => {
+  const [rezultat] = await veza.query(
+    `INSERT INTO users (full_name, email, phone)
+     VALUES (?, ?, '')
+     ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), full_name = ?`,
+    [ime, email, ime],
+  );
+  return rezultat.insertId;
+};
+
+// Pošalji potvrdu. Poziva se izvan transakcije i nikad ne baca — neuspjeh
+// slanja ne smije poništiti već zapisanu rezervaciju.
+const posaljiPotvrdu = async (primatelj, sadrzaj) => {
+  if (!resend) {
+    console.warn(
+      "RESEND_API_KEY nije postavljen — potvrda rezervacije nije poslana.",
+    );
+    return;
+  }
   try {
-    const {
-      line_departure_id,
-      user_id,
-      adults_count,
-      children_count,
-      name,
-      email,
-      from_location,
-      to_location,
-    } = req.body;
-
-    const adults = Number(adults_count);
-    const children = Number(children_count);
-    const seats_count = adults + children;
-
-    if (!line_departure_id || !user_id || !email) {
-      return res.status(400).json({
-        message: "Nedostaju obavezni podaci za rezervaciju!",
-      });
+    const { data, error } = await resend.emails.send({
+      from: process.env.MAIL_FROM || "Taxi Boat Helena <onboarding@resend.dev>",
+      to: primatelj,
+      subject: "Potvrda rezervacije",
+      html: sadrzaj,
+    });
+    if (error) {
+      console.error("Greška kod slanja emaila:", error);
+    } else {
+      console.log("Email uspješno poslan:", data?.id ?? data);
     }
+  } catch (greska) {
+    console.error("Email servis error:", greska);
+  }
+};
 
-    if (!name || name.trim().length < 2) {
-      return res.status(400).json({
-        message: "Unesite ime i prezime.",
-      });
-    }
+// ---------------------------------------------------------------------------
+// NOVA REZERVACIJA (javno)
+// ---------------------------------------------------------------------------
+router.post("/", async (req, res) => {
+  const { line_departure_id, adults_count, children_count, name, email } =
+    req.body;
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const adults = Number(adults_count);
+  const children = Number(children_count);
+  const seats_count = adults + children;
 
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({
-        message: "Email adresa nije ispravna.",
-      });
-    }
+  // --- validacija ulaza ---
+  if (!line_departure_id || !email) {
+    return res
+      .status(400)
+      .json({ message: "Nedostaju obavezni podaci za rezervaciju!" });
+  }
 
-    if (Number.isNaN(adults) || adults < 1) {
-      return res.status(400).json({
-        message: "Potrebno je odabrati barem 1 odraslu osobu.",
-      });
-    }
+  if (!name || name.trim().length < 2) {
+    return res.status(400).json({ message: "Unesite ime i prezime." });
+  }
 
-    if (Number.isNaN(children) || children < 0) {
-      return res.status(400).json({
-        message: "Broj djece nije ispravan.",
-      });
-    }
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    return res.status(400).json({ message: "Email adresa nije ispravna." });
+  }
 
-    if (seats_count < 1) {
-      return res.status(400).json({
-        message: "Ukupan broj mjesta mora biti barem 1.",
-      });
-    }
+  if (Number.isNaN(adults) || adults < 1) {
+    return res
+      .status(400)
+      .json({ message: "Potrebno je odabrati barem 1 odraslu osobu." });
+  }
 
-    const [departures] = await pool.query(
-      `SELECT * FROM line_departures WHERE id = ?`,
+  if (Number.isNaN(children) || children < 0) {
+    return res.status(400).json({ message: "Broj djece nije ispravan." });
+  }
+
+  if (seats_count < 1) {
+    return res
+      .status(400)
+      .json({ message: "Ukupan broj mjesta mora biti barem 1." });
+  }
+
+  const imeGosta = name.trim();
+  const emailGosta = email.trim();
+
+  const veza = await pool.getConnection();
+  let podaciZaEmail = null;
+
+  try {
+    await veza.beginTransaction();
+
+    // Redak polaska se zaključava do kraja transakcije. Time dvije istovremene
+    // rezervacije ne mogu obje pročitati isti broj slobodnih mjesta.
+    const [polasci] = await veza.query(
+      `SELECT id, capacity, reserved_seats, status,
+              DATE_FORMAT(departure_date, '%Y-%m-%d') AS departure_date,
+              departure_time,
+              (TIMESTAMP(departure_date, departure_time) < NOW()) AS je_proslost
+         FROM line_departures
+        WHERE id = ?
+          FOR UPDATE`,
       [line_departure_id],
     );
 
-    if (departures.length === 0) {
-      return res.status(404).json({
-        message: `Ne postoji polazak sa ID-em ${line_departure_id}!`,
-      });
+    if (polasci.length === 0) {
+      await veza.rollback();
+      return res
+        .status(404)
+        .json({ message: `Ne postoji polazak sa ID-em ${line_departure_id}!` });
     }
 
-    const departure = departures[0];
+    const polazak = polasci[0];
 
-if (new Date(`${departure.departure_date}T${departure.departure_time}`) < new Date()) {
-  return res.status(400).json({
-    message: "Nije moguće rezervirati polazak u prošlosti.",
-  });
-}
+    if (Number(polazak.je_proslost) === 1) {
+      await veza.rollback();
+      return res
+        .status(400)
+        .json({ message: "Nije moguće rezervirati polazak u prošlosti." });
+    }
 
-    const availableSeats = departure.capacity - departure.reserved_seats;
+    if (polazak.status !== "scheduled") {
+      await veza.rollback();
+      return res
+        .status(400)
+        .json({ message: "Nije moguće rezervirati taj polazak!" });
+    }
 
-    if (availableSeats < seats_count) {
+    const slobodnaMjesta = polazak.capacity - polazak.reserved_seats;
+    if (slobodnaMjesta < seats_count) {
+      await veza.rollback();
       return res.status(400).json({
-        message: `Rezervirali biste ${seats_count} mjesta, a trenutno je dostupno najviše ${availableSeats}.`,
+        message: `Rezervirali biste ${seats_count} mjesta, a trenutno je dostupno najviše ${slobodnaMjesta}.`,
       });
     }
 
-    if (departure.status !== "scheduled") {
-      return res.status(400).json({
-        message: "Nije moguće rezervirati taj polazak!",
-      });
-    }
-
-    const reservationCode =
-      "RES-" + Math.random().toString(36).slice(2, 8).toUpperCase();
-
-    await pool.query(
-      `INSERT INTO line_reservations
-      (line_departure_id, user_id, adults_count, children_count, seats_count, status, reservation_code, guest_name, guest_email)
-      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
-      [
-        line_departure_id,
-        user_id,
-        adults,
-        children,
-        seats_count,
-        reservationCode,
-        name.trim(),
-        email.trim(),
-      ],
+    // Naziv rute uzima se iz baze, a ne iz tijela zahtjeva.
+    const [rute] = await veza.query(
+      `SELECT fl.name AS from_location, tl.name AS to_location
+         FROM line_departures ld
+         JOIN locations fl ON ld.from_location_id = fl.id
+         JOIN locations tl ON ld.to_location_id = tl.id
+        WHERE ld.id = ?`,
+      [line_departure_id],
     );
+    const ruta = rute[0] || { from_location: "", to_location: "" };
 
-    await pool.query(
-      `UPDATE line_departures
-       SET reserved_seats = reserved_seats + ?
-       WHERE id = ?`,
-      [seats_count, line_departure_id],
+    const userId = await nadjiIliStvoriKorisnika(veza, imeGosta, emailGosta);
+
+    // Kod je jedinstven u bazi; u malo vjerojatnom slučaju kolizije pokušaj ponovno.
+    let reservationCode = null;
+    for (let pokusaj = 1; pokusaj <= 5; pokusaj++) {
+      const kandidat = generirajKod();
+      try {
+        await veza.query(
+          `INSERT INTO line_reservations
+             (line_departure_id, user_id, adults_count, children_count, seats_count,
+              status, reservation_code, guest_name, guest_email)
+           VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+          [
+            line_departure_id,
+            userId,
+            adults,
+            children,
+            seats_count,
+            kandidat,
+            imeGosta,
+            emailGosta,
+          ],
+        );
+        reservationCode = kandidat;
+        break;
+      } catch (greska) {
+        if (greska.code === "ER_DUP_ENTRY" && pokusaj < 5) continue;
+        throw greska;
+      }
+    }
+
+    const noviBrojMjesta = polazak.reserved_seats + seats_count;
+
+    await veza.query(
+      "UPDATE line_departures SET reserved_seats = ? WHERE id = ?",
+      [noviBrojMjesta, line_departure_id],
     );
 
     // Ako je polazak sada popunjen, automatski ga označi kao 'full'.
-    const noviReserved = departure.reserved_seats + seats_count;
-    if (noviReserved >= departure.capacity) {
-      await pool.query(
+    if (noviBrojMjesta >= polazak.capacity) {
+      await veza.query(
         "UPDATE line_departures SET status = 'full' WHERE id = ? AND status = 'scheduled'",
         [line_departure_id],
       );
     }
 
-    const totalPrice = adults * 4 + children * 2;
+    await veza.commit();
 
-    const emailHtml = buildReservationEmail({
-      reservationCode,
-      departure,
-      routeText: `${from_location} → ${to_location}`,
-      seatsCount: seats_count,
-      adults,
-      children,
-      totalPrice,
-    });
+    const totalPrice = adults * CIJENA_ODRASLI + children * CIJENA_DIJETE;
 
-    try {
-      const { data, error } = await resend.emails.send({
-        from: "Taxi Line <onboarding@resend.dev>",
-        to: email,
-        subject: "Potvrda rezervacije",
-        html: emailHtml,
-      });
+    podaciZaEmail = {
+      primatelj: emailGosta,
+      sadrzaj: buildReservationEmail({
+        reservationCode,
+        departure: {
+          departure_date: polazak.departure_date,
+          departure_time: polazak.departure_time,
+        },
+        routeText: `${ruta.from_location} → ${ruta.to_location}`,
+        seatsCount: seats_count,
+        adults,
+        children,
+        totalPrice,
+      }),
+    };
 
-      if (error) {
-        console.error("Greška kod slanja emaila:", error);
-      } else {
-        console.log("Email uspješno poslan:", data);
-      }
-    } catch (mailError) {
-      console.error("Email servis error:", mailError);
-    }
-
-    return res.status(201).json({
+    res.status(201).json({
       message: `Uspješno ste rezervirali ${seats_count} mjesta.`,
       reservationCode,
       totalSeats: seats_count,
@@ -168,14 +246,25 @@ if (new Date(`${departure.departure_date}T${departure.departure_time}`) < new Da
       childrenCount: children,
       totalPrice,
     });
-  } catch (error) {
-    console.error(error.message);
-    return res.status(500).json({
-      message: "Greška u radu sa bazom podataka!",
-    });
+  } catch (greska) {
+    await veza.rollback().catch(() => {});
+    console.error("GRESKA:", greska.message);
+    return res
+      .status(500)
+      .json({ message: "Greška u radu sa bazom podataka!" });
+  } finally {
+    veza.release();
+  }
+
+  // Slanje pošte tek nakon što je odgovor poslan i transakcija zatvorena.
+  if (podaciZaEmail) {
+    await posaljiPotvrdu(podaciZaEmail.primatelj, podaciZaEmail.sadrzaj);
   }
 });
 
+// ---------------------------------------------------------------------------
+// POPIS REZERVACIJA (admin)
+// ---------------------------------------------------------------------------
 router.get("/", requireAdmin, async (req, res) => {
   try {
     const [rezervacije] = await pool.query(`SELECT
@@ -200,115 +289,114 @@ router.get("/", requireAdmin, async (req, res) => {
       ORDER BY ld.departure_date DESC, ld.departure_time ASC`);
 
     return res.status(200).json(rezervacije);
-  } catch (error) {
-    console.log("GRESKA: ", error.message);
-    res.status(500).json({ message: "Greska u radu sa bazom podataka!" });
-  }
-});
-
-router.delete("/:id", requireAdmin, async (req, res) => {
-  try {
-    const ID_rez = req.params.id;
-
-    const [reservations] = await pool.query(
-      `SELECT * FROM line_reservations WHERE id=?`,
-      [ID_rez],
-    );
-
-    if (reservations.length == 0) {
-      return res
-        .status(404)
-        .json({ message: "Rezervaciju nije moguće pronaći!" });
-    }
-
-    const reservation = reservations[0];
-
-    if (reservation.status != "active") {
-      return res
-        .status(400)
-        .json({ message: "Nije moguce obrisati ovu rezervaciju!" });
-    }
-
-    await pool.query(
-      `UPDATE line_reservations SET status="cancelled" WHERE id=?`,
-      [ID_rez],
-    );
-
-    await pool.query(
-      `UPDATE line_departures SET reserved_seats=reserved_seats-? WHERE id=?`,
-      [reservation.seats_count, reservation.line_departure_id],
-    );
-
-    // Oslobodilo se mjesto — ako je bio popunjen, vrati ga na aktivan.
-    await pool.query(
-      "UPDATE line_departures SET status = 'scheduled' WHERE id = ? AND status = 'full'",
-      [reservation.line_departure_id],
-    );
-
-    return res
-      .status(200)
-      .json({ message: "Uspjesno ste otkazali rezervaciju!" });
-  } catch (error) {
-    console.error("GRESKA:", error.message);
+  } catch (greska) {
+    console.error("GRESKA:", greska.message);
     return res
       .status(500)
       .json({ message: "Greska u radu sa bazom podataka!" });
   }
 });
 
-// OTKAZIVANJE OD STRANE GOSTA (preko koda rezervacije) — javno
-router.post("/cancel-by-code", async (req, res) => {
+// ---------------------------------------------------------------------------
+// Zajednička logika otkazivanja. Vraća { status, message }.
+// ---------------------------------------------------------------------------
+const otkaziRezervaciju = async ({ id, kod }) => {
+  const veza = await pool.getConnection();
   try {
-    const { reservation_code } = req.body;
+    await veza.beginTransaction();
 
-    if (!reservation_code) {
-      return res.status(400).json({ message: "Unesite kod rezervacije." });
-    }
-
-    const [reservations] = await pool.query(
-      "SELECT * FROM line_reservations WHERE reservation_code = ?",
-      [reservation_code.trim()],
+    const [rezervacije] = await veza.query(
+      id
+        ? "SELECT id, line_departure_id, seats_count, status FROM line_reservations WHERE id = ? FOR UPDATE"
+        : "SELECT id, line_departure_id, seats_count, status FROM line_reservations WHERE reservation_code = ? FOR UPDATE",
+      [id ?? kod],
     );
 
-    if (reservations.length === 0) {
-      return res
-        .status(404)
-        .json({ message: "Rezervacija s tim kodom nije pronađena." });
+    if (rezervacije.length === 0) {
+      await veza.rollback();
+      return {
+        status: 404,
+        message: id
+          ? "Rezervaciju nije moguće pronaći!"
+          : "Rezervacija s tim kodom nije pronađena.",
+      };
     }
 
-    const reservation = reservations[0];
+    const rezervacija = rezervacije[0];
 
-    if (reservation.status !== "active") {
-      return res
-        .status(400)
-        .json({ message: "Ova rezervacija je već otkazana." });
+    if (rezervacija.status !== "active") {
+      await veza.rollback();
+      return { status: 400, message: "Ova rezervacija je već otkazana." };
     }
 
-    await pool.query(
+    // Zaključaj i polazak kako bi umanjenje brojača bilo sigurno.
+    const [polasci] = await veza.query(
+      "SELECT id, capacity, reserved_seats, status FROM line_departures WHERE id = ? FOR UPDATE",
+      [rezervacija.line_departure_id],
+    );
+
+    await veza.query(
       "UPDATE line_reservations SET status = 'cancelled' WHERE id = ?",
-      [reservation.id],
+      [rezervacija.id],
     );
 
-    await pool.query(
-      "UPDATE line_departures SET reserved_seats = reserved_seats - ? WHERE id = ?",
-      [reservation.seats_count, reservation.line_departure_id],
-    );
+    if (polasci.length > 0) {
+      const polazak = polasci[0];
+      // GREATEST sprječava da brojač padne ispod nule ako podaci ikad odstupe.
+      const noviBrojMjesta = Math.max(
+        0,
+        polazak.reserved_seats - rezervacija.seats_count,
+      );
 
-    // Oslobodilo se mjesto — ako je polazak bio popunjen, vrati ga na aktivan.
-    await pool.query(
-      "UPDATE line_departures SET status = 'scheduled' WHERE id = ? AND status = 'full'",
-      [reservation.line_departure_id],
-    );
+      await veza.query(
+        "UPDATE line_departures SET reserved_seats = ? WHERE id = ?",
+        [noviBrojMjesta, polazak.id],
+      );
 
-    return res
-      .status(200)
-      .json({ message: "Rezervacija je uspješno otkazana." });
-  } catch (error) {
-    console.error("GRESKA:", error.message);
-    return res
-      .status(500)
-      .json({ message: "Greška kod otkazivanja rezervacije." });
+      // Oslobodilo se mjesto — ako je polazak bio popunjen, vrati ga na aktivan.
+      if (noviBrojMjesta < polazak.capacity && polazak.status === "full") {
+        await veza.query(
+          "UPDATE line_departures SET status = 'scheduled' WHERE id = ?",
+          [polazak.id],
+        );
+      }
+    }
+
+    await veza.commit();
+    return { status: 200, message: "Rezervacija je uspješno otkazana." };
+  } catch (greska) {
+    await veza.rollback().catch(() => {});
+    console.error("GRESKA:", greska.message);
+    return { status: 500, message: "Greška kod otkazivanja rezervacije." };
+  } finally {
+    veza.release();
   }
+};
+
+// ---------------------------------------------------------------------------
+// OTKAZIVANJE (admin)
+// ---------------------------------------------------------------------------
+router.delete("/:id", requireAdmin, async (req, res) => {
+  const ishod = await otkaziRezervaciju({ id: req.params.id });
+  const poruka =
+    ishod.status === 200 ? "Uspjesno ste otkazali rezervaciju!" : ishod.message;
+  return res.status(ishod.status).json({ message: poruka });
+});
+
+// ---------------------------------------------------------------------------
+// OTKAZIVANJE OD STRANE GOSTA (preko koda rezervacije) — javno
+// ---------------------------------------------------------------------------
+router.post("/cancel-by-code", async (req, res) => {
+  const { reservation_code } = req.body;
+
+  if (!reservation_code) {
+    return res.status(400).json({ message: "Unesite kod rezervacije." });
+  }
+
+  const ishod = await otkaziRezervaciju({
+    kod: String(reservation_code).trim().toUpperCase(),
+  });
+  return res.status(ishod.status).json({ message: ishod.message });
 });
 
 export default router;

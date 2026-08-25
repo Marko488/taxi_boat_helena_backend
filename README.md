@@ -50,6 +50,9 @@ node createAdmin.js "Ime Prezime" admin@email.hr lozinka admin
 
 Tim podacima (email + lozinka) prijavljuje se u admin dio aplikacije.
 
+
+Rezervacije se izvode u transakciji uz zaključavanje polaska.
+
 ## Glavne rute (API)
 
 - `POST /auth/login` — prijava admina (vraća JWT token)
